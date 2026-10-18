@@ -1,0 +1,415 @@
+// numeric: roots. Finding the x where a function is zero: the depth of
+// flow that carries a discharge, the factor of safety that balances a slope,
+// the level that holds a volume. Write the problem as f(x) = 0 (for "f(x)
+// equals a target", use f(x) - target) and hand f to one of these.
+//
+// `brent` is the one to reach for: given two x's where f has opposite signs,
+// it always finds the root, and quickly. `bisection` is the simplest and
+// slowest. `newton` and `secant` need no bracket, but can wander off when
+// started far from the root. `bracket` and `scan` find a bracket to start
+// from.
+//
+// Author: Alexius Academia
+// Date: 2026-10-18
+
+// The answer of a root finder.
+//
+// Fields:
+//   value: The root found: the x where f is (close to) zero. `NaN` when
+//          there's no answer, like a bracket where f doesn't change sign.
+//   residual: f(value): how far from zero f is there. Check it when f
+//             might be discontinuous: a sign change across a jump looks
+//             like a root to `bisection` and `brent`.
+//   iterations: How many steps the method took.
+//   converged: Whether the method met its tolerance. When it's false,
+//              `value` is the last x tried (or `NaN`), not an answer.
+//
+// Example:
+//   let r = numeric.brent(low: 0.0, high: 2.0) { x in x * x - 2.0 }
+//   if r.converged { print(r.value) }   // 1.41421356237… (sqrt 2)
+public struct Root {
+    value: Float
+    residual: Float
+    iterations: Int
+    converged: Bool
+}
+
+// A range of x where f changes sign, so a root lies between its ends.
+//
+// Fields:
+//   low: One end of the range.
+//   high: The other end.
+//   found: Whether f really changes sign between `low` and `high`. When
+//          it's false, no range was found and `low` and `high` are where
+//          the search stopped.
+public struct Bracket {
+    low: Float
+    high: Float
+    found: Bool
+}
+
+// The smallest difference between 1.0 and the next Float.
+let epsilon = 2.220446049250313e-16
+
+// Whether `a` and `b` have opposite signs (a zero counts as either).
+fn changesSign(_ a: Float, _ b: Float) -> Bool {
+    (a <= 0.0 && b >= 0.0) || (a >= 0.0 && b <= 0.0)
+}
+
+// A root that wasn't found, after `iterations` steps, last at `x`.
+fn notFound(_ x: Float, _ fx: Float, _ iterations: Int) -> Root {
+    Root(value: x, residual: fx, iterations: iterations, converged: false)
+}
+
+// A root of f between `low` and `high`, by halving the range until it's
+// smaller than `tolerance`.
+//
+// Each step halves the range, keeping the half where f changes sign, so it
+// always finds a root of a continuous f, but slowly: about 40 steps for 12
+// digits. Prefer `brent`, which is as sure and much faster.
+//
+// Parameters:
+//   low: One end of the range.
+//   high: The other end. f(low) and f(high) must have opposite signs (or
+//         one be zero).
+//   tolerance: How close to the root the answer must be, in x. The range
+//              is halved until it's narrower than twice this.
+//   maxIterations: The most steps to take before giving up.
+//   f: The function whose root is wanted.
+//
+// Returns:
+//   A `Root`. When f(low) and f(high) have the same sign, `value` is
+//   `NaN`, `iterations` is 0 and `converged` is false.
+//
+// Example:
+//   let r = numeric.bisection(low: 1.0, high: 2.0) { x in x * x * x - x - 2.0 }
+//   print(r.value)   // 1.5213797068045676 (to within 1e-12)
+public fn bisection(low: Float, high: Float, tolerance: Float = 1e-12, maxIterations: Int = 200, _ f: fn(Float) -> Float) -> Root {
+    var a = low
+    var b = high
+    var fa = f(a)
+    let fb = f(b)
+    if fa == 0.0 {
+        return Root(value: a, residual: 0.0, iterations: 0, converged: true)
+    }
+    if fb == 0.0 {
+        return Root(value: b, residual: 0.0, iterations: 0, converged: true)
+    }
+    if !changesSign(fa, fb) || fa.isNaN || fb.isNaN {
+        return notFound(0.0 / 0.0, 0.0 / 0.0, 0)
+    }
+    var n = 0
+    while n < maxIterations {
+        n += 1
+        let m = (a + b) / 2.0
+        let fm = f(m)
+        if fm == 0.0 || abs(b - a) / 2.0 < tolerance {
+            return Root(value: m, residual: fm, iterations: n, converged: true)
+        }
+        if changesSign(fa, fm) {
+            b = m
+        } else {
+            a = m
+            fa = fm
+        }
+    }
+    let m = (a + b) / 2.0
+    notFound(m, f(m), n)
+}
+
+// A root of f between `low` and `high`, by Brent's method.
+//
+// Brent's method mixes bisection with interpolation through the last
+// points: it keeps a range where f changes sign, as bisection does, so it
+// always finds a root of a continuous f, and it gets there in a handful of
+// steps when f is smooth. It's the method to use whenever two x's on either
+// side of the root are known.
+//
+// Parameters:
+//   low: One end of the range.
+//   high: The other end. f(low) and f(high) must have opposite signs (or
+//         one be zero). `bracket` or `scan` can find such a range.
+//   tolerance: How close to the root the answer must be, in x.
+//   maxIterations: The most steps to take before giving up.
+//   f: The function whose root is wanted.
+//
+// Returns:
+//   A `Root`. When f(low) and f(high) have the same sign, `value` is
+//   `NaN`, `iterations` is 0 and `converged` is false.
+//
+// Example:
+//   // The depth y (m) at which a 2 m wide rectangular channel carries
+//   // 3 m³/s, with Manning's n 0.013 and a slope of 0.001.
+//   let r = numeric.brent(low: 0.01, high: 10.0) { y in
+//       let area = 2.0 * y
+//       let radius = area / (2.0 + 2.0 * y)
+//       area * pow(radius, 2.0 / 3.0) * sqrt(0.001) / 0.013 - 3.0
+//   }
+//   print(r.value)   // about 0.984
+public fn brent(low: Float, high: Float, tolerance: Float = 1e-12, maxIterations: Int = 100, _ f: fn(Float) -> Float) -> Root {
+    var a = low
+    var b = high
+    var fa = f(a)
+    var fb = f(b)
+    if fa == 0.0 {
+        return Root(value: a, residual: 0.0, iterations: 0, converged: true)
+    }
+    if fb == 0.0 {
+        return Root(value: b, residual: 0.0, iterations: 0, converged: true)
+    }
+    if !changesSign(fa, fb) || fa.isNaN || fb.isNaN {
+        return notFound(0.0 / 0.0, 0.0 / 0.0, 0)
+    }
+    // b is the best guess so far, a the one before, and c keeps the root
+    // between b and c; d is the last step and e the one before it.
+    var c = b
+    var fc = fb
+    var d = b - a
+    var e = d
+    var n = 0
+    while n < maxIterations {
+        n += 1
+        if (fb > 0.0 && fc > 0.0) || (fb < 0.0 && fc < 0.0) {
+            c = a
+            fc = fa
+            d = b - a
+            e = d
+        }
+        if abs(fc) < abs(fb) {
+            a = b
+            b = c
+            c = a
+            fa = fb
+            fb = fc
+            fc = fa
+        }
+        let tol = 2.0 * epsilon * abs(b) + 0.5 * tolerance
+        let half = 0.5 * (c - b)
+        if abs(half) <= tol || fb == 0.0 {
+            return Root(value: b, residual: fb, iterations: n, converged: true)
+        }
+        if abs(e) >= tol && abs(fa) > abs(fb) {
+            // Interpolate: through two points (secant) or three (inverse
+            // quadratic).
+            let s = fb / fa
+            var p = 0.0
+            var q = 0.0
+            if a == c {
+                p = 2.0 * half * s
+                q = 1.0 - s
+            } else {
+                let qa = fa / fc
+                let r = fb / fc
+                p = s * (2.0 * half * qa * (qa - r) - (b - a) * (r - 1.0))
+                q = (qa - 1.0) * (r - 1.0) * (s - 1.0)
+            }
+            if p > 0.0 {
+                q = -q
+            }
+            p = abs(p)
+            // Take the interpolated step only when it stays inside the
+            // range and shrinks it fast enough; bisect otherwise.
+            if 2.0 * p < min(3.0 * half * q - abs(tol * q), abs(e * q)) {
+                e = d
+                d = p / q
+            } else {
+                d = half
+                e = d
+            }
+        } else {
+            d = half
+            e = d
+        }
+        a = b
+        fa = fb
+        if abs(d) > tol {
+            b += d
+        } else if half >= 0.0 {
+            b += tol
+        } else {
+            b -= tol
+        }
+        fb = f(b)
+    }
+    notFound(b, fb, n)
+}
+
+// A root of f near `start`, by Newton's method, with f's derivative.
+//
+// Each step follows the tangent of f to where it crosses zero. Near a root
+// of a smooth f it doubles the correct digits every step; far from one, or
+// where the derivative is near zero, it can jump away. Use it when the
+// derivative is known and the start is good; otherwise use `brent`.
+//
+// Parameters:
+//   start: The first guess.
+//   tolerance: How small the last step must be, in x, to stop.
+//   maxIterations: The most steps to take before giving up.
+//   derivative: f's derivative, f'(x).
+//   f: The function whose root is wanted.
+//
+// Returns:
+//   A `Root`. It hasn't converged if a step meets a zero derivative or
+//   leaves the numbers (an infinite or `NaN` x).
+//
+// Example:
+//   let r = numeric.newton(start: 1.0, derivative: { x in 2.0 * x }) { x in x * x - 2.0 }
+//   print(r.value)   // 1.414213562373095
+public fn newton(start: Float, tolerance: Float = 1e-12, maxIterations: Int = 50, derivative: fn(Float) -> Float, _ f: fn(Float) -> Float) -> Root {
+    var x = start
+    var fx = f(x)
+    var n = 0
+    while n < maxIterations {
+        if fx == 0.0 {
+            return Root(value: x, residual: 0.0, iterations: n, converged: true)
+        }
+        n += 1
+        let slope = derivative(x)
+        if slope == 0.0 || !slope.isFinite {
+            return notFound(x, fx, n)
+        }
+        let step = fx / slope
+        x -= step
+        fx = f(x)
+        if !x.isFinite {
+            return notFound(x, fx, n)
+        }
+        if abs(step) <= tolerance {
+            return Root(value: x, residual: fx, iterations: n, converged: true)
+        }
+    }
+    notFound(x, fx, n)
+}
+
+// A root of f near `start` and `next`, by the secant method.
+//
+// Like `newton`, but the tangent is replaced by the line through the last
+// two points, so no derivative is needed. It's nearly as fast near a root,
+// and can wander off as easily far from one.
+//
+// Parameters:
+//   start: The first guess.
+//   next: A second guess, near the first (and different from it).
+//   tolerance: How small the last step must be, in x, to stop.
+//   maxIterations: The most steps to take before giving up.
+//   f: The function whose root is wanted.
+//
+// Returns:
+//   A `Root`. It hasn't converged if two points have the same f (a level
+//   line) or a step leaves the numbers.
+//
+// Example:
+//   let r = numeric.secant(start: 1.0, next: 2.0) { x in cos(x) - x }
+//   print(r.value)   // 0.7390851332151607
+public fn secant(start: Float, next: Float, tolerance: Float = 1e-12, maxIterations: Int = 100, _ f: fn(Float) -> Float) -> Root {
+    var x0 = start
+    var f0 = f(x0)
+    var x1 = next
+    var f1 = f(x1)
+    var n = 0
+    while n < maxIterations {
+        if f1 == 0.0 {
+            return Root(value: x1, residual: 0.0, iterations: n, converged: true)
+        }
+        n += 1
+        if f1 == f0 {
+            return notFound(x1, f1, n)
+        }
+        let step = f1 * (x1 - x0) / (f1 - f0)
+        x0 = x1
+        f0 = f1
+        x1 -= step
+        f1 = f(x1)
+        if !x1.isFinite {
+            return notFound(x1, f1, n)
+        }
+        if abs(step) <= tolerance {
+            return Root(value: x1, residual: f1, iterations: n, converged: true)
+        }
+    }
+    notFound(x1, f1, n)
+}
+
+// A range where f changes sign, found by widening the range from `start`
+// to `start + step` until it does.
+//
+// The range grows by half again each time, on the side where f is
+// smaller, so it reaches far quickly. It may wander outside where f makes
+// sense (a negative depth, say): use `scan` when x must stay in a range.
+//
+// Parameters:
+//   start: One end of the first range.
+//   step: The first range's width. It may be negative.
+//   maxSteps: The most times to widen it before giving up.
+//   f: The function whose root is wanted.
+//
+// Returns:
+//   A `Bracket`, with `found` false when f didn't change sign in
+//   `maxSteps` widenings.
+//
+// Example:
+//   let b = numeric.bracket(start: 0.0, step: 1.0) { x in x * x - 50.0 }
+//   let r = numeric.brent(low: b.low, high: b.high) { x in x * x - 50.0 }
+public fn bracket(start: Float, step: Float, maxSteps: Int = 50, _ f: fn(Float) -> Float) -> Bracket {
+    var a = start
+    var b = start + step
+    var fa = f(a)
+    var fb = f(b)
+    var n = 0
+    while n < maxSteps {
+        if changesSign(fa, fb) && !fa.isNaN && !fb.isNaN {
+            return Bracket(low: min(a, b), high: max(a, b), found: true)
+        }
+        n += 1
+        if abs(fa) < abs(fb) {
+            a += 1.6 * (a - b)
+            fa = f(a)
+        } else {
+            b += 1.6 * (b - a)
+            fb = f(b)
+        }
+    }
+    Bracket(low: min(a, b), high: max(a, b), found: false)
+}
+
+// The first range where f changes sign, from `low` to `high` cut into
+// `steps` equal parts.
+//
+// It looks only between `low` and `high`, part by part from `low`, so it
+// suits an f that only makes sense there, and finds the root nearest
+// `low` when there are several (as long as the parts are narrower than the
+// space between roots).
+//
+// Parameters:
+//   low: Where to start looking.
+//   high: Where to stop.
+//   steps: How many parts to cut the range into.
+//   f: The function whose root is wanted.
+//
+// Returns:
+//   A `Bracket` for the first part where f changes sign, with `found`
+//   false when none does.
+//
+// Example:
+//   // The first positive root of sin(x) = 0.5.
+//   let b = numeric.scan(low: 0.0, high: 10.0, steps: 100) { x in sin(x) - 0.5 }
+//   let r = numeric.brent(low: b.low, high: b.high) { x in sin(x) - 0.5 }
+//   print(r.value)   // 0.5235987755982989 (pi / 6)
+public fn scan(low: Float, high: Float, steps: Int = 100, _ f: fn(Float) -> Float) -> Bracket {
+    let parts = max(steps, 1)
+    let width = (high - low) / Float(parts)
+    var a = low
+    var fa = f(a)
+    var i = 1
+    while i <= parts {
+        let b = if i == parts { high } else { low + width * Float(i) }
+        let fb = f(b)
+        if changesSign(fa, fb) && !fa.isNaN && !fb.isNaN {
+            return Bracket(low: a, high: b, found: true)
+        }
+        a = b
+        fa = fb
+        i += 1
+    }
+    Bracket(low: low, high: high, found: false)
+}

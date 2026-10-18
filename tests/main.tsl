@@ -1,0 +1,143 @@
+// numeric's tests: every method against answers known exactly, and every
+// example in the documentation. `tessel run tests` prints a line per check
+// and exits with 1 if any failed.
+//
+// Author: Alexius Academia
+// Date: 2026-10-18
+
+import ".."
+
+// Checks that `got` is within `within` of `expected`: 1 if it isn't.
+fn near(_ name: String, _ got: Float, _ expected: Float, within: Float = 1e-9) -> Int {
+    if abs(got - expected) <= within {
+        print("ok    {name}: {got}")
+        return 0
+    }
+    print("FAIL  {name}: {got}, expected {expected}")
+    1
+}
+
+// Checks that `got` is true: 1 if it isn't.
+fn holds(_ name: String, _ got: Bool) -> Int {
+    if got {
+        print("ok    {name}")
+        return 0
+    }
+    print("FAIL  {name}")
+    1
+}
+
+// The roots checks: how many failed.
+fn roots() -> Int {
+    var failed = 0
+    let sqrt2 = sqrt(2.0)
+    let b = numeric.bisection(low: 1.0, high: 2.0) { x in x * x - 2.0 }
+    failed += near("bisection: sqrt 2", b.value, sqrt2, within: 1e-12)
+    failed += holds("bisection converged", b.converged)
+    let c = numeric.bisection(low: 1.0, high: 2.0) { x in x * x * x - x - 2.0 }
+    failed += near("bisection: the example", c.value, 1.5213797068045676, within: 1e-12)
+    let none = numeric.bisection(low: 2.0, high: 3.0) { x in x * x - 2.0 }
+    failed += holds("bisection without a sign change says so", !none.converged && none.value.isNaN && none.iterations == 0)
+
+    let r = numeric.brent(low: 0.0, high: 2.0) { x in x * x - 2.0 }
+    failed += near("brent: sqrt 2", r.value, sqrt2, within: 1e-12)
+    failed += holds("brent is fast ({r.iterations} steps)", r.converged && r.iterations < 15)
+    let depth = numeric.brent(low: 0.01, high: 10.0) { y in
+        let area = 2.0 * y
+        let radius = area / (2.0 + 2.0 * y)
+        area * pow(radius, 2.0 / 3.0) * sqrt(0.001) / 0.013 - 3.0
+    }
+    failed += near("brent: the channel's normal depth", depth.residual, 0.0, within: 1e-9)
+    failed += near("brent: about 0.984", depth.value, 0.984, within: 0.001)
+    let steep = numeric.brent(low: -4.0, high: 4.0 / 3.0) { x in (x + 3.0) * (x - 1.0) * (x - 1.0) }
+    failed += near("brent: a root where f only touches zero next to one it crosses", steep.value, -3.0, within: 1e-10)
+    let same = numeric.brent(low: 2.0, high: 3.0) { x in x * x - 2.0 }
+    failed += holds("brent without a sign change says so", !same.converged && same.value.isNaN)
+
+    let n = numeric.newton(start: 1.0, derivative: { x in 2.0 * x }) { x in x * x - 2.0 }
+    failed += near("newton: sqrt 2", n.value, sqrt2, within: 1e-14)
+    failed += holds("newton converged", n.converged)
+    let flat = numeric.newton(start: 0.0, derivative: { x in 2.0 * x }) { x in x * x - 2.0 }
+    failed += holds("newton at a zero derivative says so", !flat.converged)
+
+    let s = numeric.secant(start: 1.0, next: 2.0) { x in cos(x) - x }
+    failed += near("secant: cos x = x", s.value, 0.7390851332151607, within: 1e-12)
+
+    let br = numeric.bracket(start: 0.0, step: 1.0) { x in x * x - 50.0 }
+    failed += holds("bracket found a sign change", br.found && (br.low * br.low - 50.0) * (br.high * br.high - 50.0) <= 0.0)
+    let fifty = numeric.brent(low: br.low, high: br.high) { x in x * x - 50.0 }
+    failed += near("bracket then brent: sqrt 50", abs(fifty.value), sqrt(50.0), within: 1e-10)
+
+    let sc = numeric.scan(low: 0.0, high: 10.0, steps: 100) { x in sin(x) - 0.5 }
+    let first = numeric.brent(low: sc.low, high: sc.high) { x in sin(x) - 0.5 }
+    failed += near("scan then brent: the first root of sin x = 0.5", first.value, pi / 6.0, within: 1e-12)
+    let never = numeric.scan(low: 0.0, high: 1.0) { x in x + 1.0 }
+    failed += holds("scan without a sign change says so", !never.found)
+    failed
+}
+
+// The integrals checks: how many failed.
+fn integrals() -> Int {
+    var failed = 0
+    failed += near("trapezoid: the example", numeric.trapezoid(from: 0.0, to: 1.0, steps: 4) { x in x * x }, 0.34375)
+    failed += near("trapezoid: exact for a line", numeric.trapezoid(from: 1.0, to: 3.0, steps: 1) { x in 2.0 * x + 1.0 }, 10.0)
+    failed += near("trapezoid: backwards is negative", numeric.trapezoid(from: 1.0, to: 0.0) { x in 1.0 }, -1.0)
+    failed += near("simpson: exact for a cubic", numeric.simpson(from: 0.0, to: 1.0, steps: 2) { x in x * x * x }, 0.25)
+    failed += near("simpson: odd steps are raised", numeric.simpson(from: 0.0, to: 2.0, steps: 3) { x in x * x }, 8.0 / 3.0)
+    failed += near("simpson: sin from 0 to pi", numeric.simpson(from: 0.0, to: pi, steps: 100) { x in sin(x) }, 2.0, within: 1e-7)
+
+    let a = numeric.integrate(from: 0.0, to: pi) { x in sin(x) }
+    failed += near("integrate: sin from 0 to pi", a.value, 2.0, within: 1e-10)
+    failed += holds("integrate converged, error {a.error}", a.converged && a.error < 1e-10)
+    let bell = numeric.integrate(from: -3.0, to: 3.0) { x in exp(-x * x / 2.0) / sqrt(2.0 * pi) }
+    failed += near("integrate: the bell curve's example", bell.value, 0.9973002039367398, within: 1e-10)
+    let root = numeric.integrate(from: 0.0, to: 1.0) { x in sqrt(x) }
+    failed += near("integrate: sqrt x, steep at 0", root.value, 2.0 / 3.0, within: 1e-9)
+    let back = numeric.integrate(from: 2.0, to: 0.0) { x in x }
+    failed += near("integrate: backwards", back.value, -2.0, within: 1e-12)
+    let jump = numeric.integrate(from: 0.0, to: 1.0, maxDepth: 10) { x in if x < 0.3 { 0.0 } else { 1.0 } }
+    failed += holds("integrate: a jump it can't resolve in 10 halvings says so", !jump.converged)
+    failed += near("integrate: and is still close", jump.value, 0.7, within: 1e-3)
+
+    let hours = [0.0, 3600.0, 7200.0, 10800.0]
+    let flows = [10.0, 40.0, 25.0, 12.0]
+    failed += near("trapezoidPoints: the hydrograph's example", numeric.trapezoidPoints(x: hours, y: flows), 273600.0)
+    failed += holds("trapezoidPoints: lengths that differ give NaN", numeric.trapezoidPoints(x: [1.0], y: []).isNaN)
+    failed += near("trapezoidPoints: one point gives 0", numeric.trapezoidPoints(x: [1.0], y: [5.0]), 0.0)
+    failed
+}
+
+// The equations checks: how many failed.
+fn equations() -> Int {
+    var failed = 0
+    let e = numeric.rk4(x: 0.0, y: 1.0, to: 1.0, steps: 10) { x, y in y }
+    failed += near("rk4: e, in 10 steps", e[10].y, exp(1.0), within: 3e-6)
+    failed += holds("rk4: 11 samples, ending at 1", e.count == 11 && e[10].x == 1.0)
+    let back = numeric.rk4(x: 1.0, y: exp(1.0), to: 0.0, steps: 100) { x, y in y }
+    failed += near("rk4: backwards to y(0) = 1", back[100].y, 1.0, within: 1e-9)
+
+    let swing = numeric.rk4System(x: 0.0, y: [1.0, 0.0], to: pi, steps: 100) { t, s in [s[1], -s[0]] }
+    failed += near("rk4System: the pendulum's example", swing[100].y[0], -1.0, within: 1e-7)
+    failed += near("rk4System: at rest again", swing[100].y[1], 0.0, within: 1e-7)
+
+    let g = numeric.solve(x: 0.0, y: 1.0, to: 2.0) { x, y in -2.0 * x * y }
+    failed += near("solve: y' = -2xy is e^(-x²)", g.samples[g.samples.count - 1].y, exp(-4.0), within: 1e-8)
+    failed += holds("solve converged in {g.steps} steps", g.converged && g.steps < 100)
+    let b = numeric.solve(x: 1.0, y: exp(1.0), to: 0.0) { x, y in y }
+    failed += near("solve: backwards", b.samples[b.samples.count - 1].y, 1.0, within: 1e-7)
+    failed += holds("solve: ends exactly at `to`", b.samples[b.samples.count - 1].x == 0.0)
+    let day = numeric.solve(x: 0.0, y: 0.5, to: 86400.0) { t, h in (50.0 - 30.0 * pow(max(h, 0.0), 1.5)) / 2000000.0 }
+    failed += near("solve: the reservoir's example", day.samples[day.samples.count - 1].y, 1.30, within: 0.01)
+    let blow = numeric.solve(x: 0.0, y: 1.0, to: 2.0, maxSteps: 1000) { x, y in y * y }
+    failed += holds("solve: a solution that blows up at x = 1 says so", !blow.converged)
+    failed
+}
+
+fn main() {
+    let failures = roots() + integrals() + equations()
+    if failures > 0 {
+        print("{failures} failed")
+        exit(1)
+    }
+    print("all passed")
+}

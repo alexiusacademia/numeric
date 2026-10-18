@@ -1,0 +1,206 @@
+// numeric: integration. The area under a curve: a volume from areas along a
+// length, a load from a pressure along a wall, work from a force along a
+// path.
+//
+// `integrate` is the one to reach for: it refines where the curve needs it
+// until the answer is as accurate as asked, and says how accurate it is.
+// `simpson` and `trapezoid` use a fixed number of equal steps, and
+// `trapezoidPoints` integrates measured points.
+//
+// Author: Alexius Academia
+// Date: 2026-10-18
+
+// The answer of `integrate`.
+//
+// Fields:
+//   value: The integral.
+//   error: An estimate of how far `value` may be from the true integral.
+//   evaluations: How many times f was called.
+//   converged: Whether every part met its share of the tolerance. When
+//              it's false (f is too rough, or has a spike or a jump
+//              `maxDepth` halvings can't resolve), `value` is still the best
+//              estimate, but `error` may be larger than asked for.
+//
+// Example:
+//   let r = numeric.integrate(from: 0.0, to: pi) { x in sin(x) }
+//   print(r.value)   // 2.0 (to about 1e-10)
+public struct Integral {
+    value: Float
+    error: Float
+    evaluations: Int
+    converged: Bool
+}
+
+// The integral of f from `from` to `to`, by the trapezoid rule with
+// `steps` equal steps.
+//
+// Joins the points with straight lines. Its error falls with the square of
+// the step: halving the step quarters it. Exact for straight lines.
+//
+// Parameters:
+//   from: Where the integral starts.
+//   to: Where it ends. It may be less than `from`: the integral is then
+//       negative, as usual.
+//   steps: How many equal steps to take (at least 1).
+//   f: The function to integrate.
+//
+// Returns:
+//   The integral, a Float.
+//
+// Example:
+//   print(numeric.trapezoid(from: 0.0, to: 1.0, steps: 4) { x in x * x })   // 0.34375
+public fn trapezoid(from: Float, to: Float, steps: Int = 100, _ f: fn(Float) -> Float) -> Float {
+    let n = max(steps, 1)
+    let h = (to - from) / Float(n)
+    var sum = (f(from) + f(to)) / 2.0
+    var i = 1
+    while i < n {
+        sum += f(from + h * Float(i))
+        i += 1
+    }
+    sum * h
+}
+
+// The integral of f from `from` to `to`, by Simpson's rule with `steps`
+// equal steps.
+//
+// Fits a parabola through each pair of steps. Its error falls with the
+// fourth power of the step: halving the step divides it by 16. Exact for
+// polynomials up to cubics.
+//
+// Parameters:
+//   from: Where the integral starts.
+//   to: Where it ends. It may be less than `from`.
+//   steps: How many equal steps to take. Simpson's rule needs an even
+//          number: an odd one is raised by one.
+//   f: The function to integrate.
+//
+// Returns:
+//   The integral, a Float.
+//
+// Example:
+//   print(numeric.simpson(from: 0.0, to: 1.0, steps: 2) { x in x * x * x })   // 0.25
+public fn simpson(from: Float, to: Float, steps: Int = 100, _ f: fn(Float) -> Float) -> Float {
+    var n = max(steps, 2)
+    if n % 2 == 1 {
+        n += 1
+    }
+    let h = (to - from) / Float(n)
+    var sum = f(from) + f(to)
+    var i = 1
+    while i < n {
+        let weight = if i % 2 == 1 { 4.0 } else { 2.0 }
+        sum += weight * f(from + h * Float(i))
+        i += 1
+    }
+    sum * h / 3.0
+}
+
+// A part of the range `integrate` is still working on.
+struct Part {
+    a: Float
+    b: Float
+    fa: Float
+    fm: Float
+    fb: Float
+    // Simpson's rule over the whole part.
+    whole: Float
+    tolerance: Float
+    depth: Int
+}
+
+// Simpson's rule over [a, b], from f at its ends and middle.
+fn simpsonPart(_ a: Float, _ b: Float, _ fa: Float, _ fm: Float, _ fb: Float) -> Float {
+    (b - a) / 6.0 * (fa + 4.0 * fm + fb)
+}
+
+// The integral of f from `from` to `to`, to within `tolerance`, by adaptive
+// Simpson's rule.
+//
+// Each part of the range is integrated with Simpson's rule as a whole and
+// as two halves; where the two differ by more than the part's share of the
+// tolerance, the halves are worked on in turn. So it takes small steps only
+// where f bends sharply, and few where it's smooth.
+//
+// Parameters:
+//   from: Where the integral starts.
+//   to: Where it ends. It may be less than `from`.
+//   tolerance: How far from the true integral the answer may be.
+//   maxDepth: The most times a part may be halved, which bounds the work
+//             for an f that never settles (a jump, a spike).
+//   f: The function to integrate.
+//
+// Returns:
+//   An `Integral`: the value, an estimate of its error, how many times f
+//   was called, and whether the tolerance was met everywhere.
+//
+// Example:
+//   // The area under a bell curve from -3 to 3.
+//   let r = numeric.integrate(from: -3.0, to: 3.0) { x in exp(-x * x / 2.0) / sqrt(2.0 * pi) }
+//   print(r.value)   // 0.99730020393673
+public fn integrate(from: Float, to: Float, tolerance: Float = 1e-10, maxDepth: Int = 50, _ f: fn(Float) -> Float) -> Integral {
+    let fa = f(from)
+    let fb = f(to)
+    let fm = f((from + to) / 2.0)
+    var parts = [Part(a: from, b: to, fa: fa, fm: fm, fb: fb, whole: simpsonPart(from, to, fa, fm, fb), tolerance: tolerance, depth: maxDepth)]
+    var value = 0.0
+    var error = 0.0
+    var evaluations = 3
+    var converged = true
+    while !parts.isEmpty {
+        let p = parts.removeLast()
+        let m = (p.a + p.b) / 2.0
+        let flm = f((p.a + m) / 2.0)
+        let frm = f((m + p.b) / 2.0)
+        evaluations += 2
+        let left = simpsonPart(p.a, m, p.fa, flm, p.fm)
+        let right = simpsonPart(m, p.b, p.fm, frm, p.fb)
+        let delta = left + right - p.whole
+        // (The halves' error is about a fifteenth of their difference from
+        // the whole; adding it back is Richardson's extrapolation.)
+        if abs(delta) <= 15.0 * p.tolerance || p.depth <= 0 || !delta.isFinite {
+            if !(abs(delta) <= 15.0 * p.tolerance) {
+                converged = false
+            }
+            value += left + right + delta / 15.0
+            error += abs(delta) / 15.0
+        } else {
+            parts.append(Part(a: m, b: p.b, fa: p.fm, fm: frm, fb: p.fb, whole: right, tolerance: p.tolerance / 2.0, depth: p.depth - 1))
+            parts.append(Part(a: p.a, b: m, fa: p.fa, fm: flm, fb: p.fm, whole: left, tolerance: p.tolerance / 2.0, depth: p.depth - 1))
+        }
+    }
+    Integral(value: value, error: error, evaluations: evaluations, converged: converged)
+}
+
+// The integral of measured points, by the trapezoid rule: the area under
+// the straight lines joining (x[0], y[0]), (x[1], y[1]), and so on.
+//
+// For data rather than a function: storage from areas measured at levels,
+// a hydrograph's volume from flows read at times. The x's needn't be evenly
+// spaced, but should be in order.
+//
+// Parameters:
+//   x: The points' x's, in increasing (or decreasing) order.
+//   y: The y at each x, as many as there are x's.
+//
+// Returns:
+//   The integral, a Float: 0.0 for fewer than two points, and `NaN` when
+//   `x` and `y` have different lengths.
+//
+// Example:
+//   // Flows (m³/s) read every hour (3600 s): the volume that passed, in m³.
+//   let hours = [0.0, 3600.0, 7200.0, 10800.0]
+//   let flows = [10.0, 40.0, 25.0, 12.0]
+//   print(numeric.trapezoidPoints(x: hours, y: flows))   // 273600.0
+public fn trapezoidPoints(x: [Float], y: [Float]) -> Float {
+    if x.count != y.count {
+        return 0.0 / 0.0
+    }
+    var sum = 0.0
+    var i = 1
+    while i < x.count {
+        sum += (x[i] - x[i - 1]) * (y[i] + y[i - 1]) / 2.0
+        i += 1
+    }
+    sum
+}

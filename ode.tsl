@@ -1,0 +1,239 @@
+// numeric: ordinary differential equations. Following a quantity that
+// changes at a rate depending on where it is: a water surface along a
+// channel (dy/dx), a reservoir's level through a flood (dh/dt), a beam's
+// slope along its span.
+//
+// `solve` is the one to reach for: it chooses its own steps to meet a
+// tolerance. `rk4` takes a fixed number of equal steps, which suits output
+// wanted at regular x's; `rk4System` does the same for several quantities
+// that change together.
+//
+// Author: Alexius Academia
+// Date: 2026-10-18
+
+// A point of a solution: an x and the y there.
+//
+// Fields:
+//   x: Where along the way.
+//   y: The quantity there.
+public struct Sample {
+    x: Float
+    y: Float
+}
+
+// A point of the solution of a system: an x and each quantity there.
+//
+// Fields:
+//   x: Where along the way.
+//   y: The quantities there, in the order the system gives them.
+public struct State {
+    x: Float
+    y: [Float]
+}
+
+// The answer of `solve`.
+//
+// Fields:
+//   samples: The solution at each step taken, from the start to the end
+//            (or to where it stopped).
+//   steps: How many steps were taken; the steps tried again with a
+//          smaller size aren't counted.
+//   converged: Whether it reached the end within `maxSteps`, with every
+//              step within the tolerance. When it's false, `samples` ends
+//              where it stopped: often where the solution blows up, or
+//              where f gives `NaN` (like a depth that reached zero).
+public struct Solution {
+    samples: [Sample]
+    steps: Int
+    converged: Bool
+}
+
+// The solution of dy/dx = f(x, y) from (x, y) to `to`, by the classic
+// fourth-order Runge-Kutta method with `steps` equal steps.
+//
+// Each step samples the slope four times across the step and takes a
+// weighted mean. Its error falls with the fourth power of the step size.
+//
+// Parameters:
+//   x: Where the solution starts.
+//   y: The quantity there (the starting condition).
+//   to: Where it ends. It may be less than `x`, to go backwards (like a
+//       water surface computed upstream from a control).
+//   steps: How many equal steps to take (at least 1).
+//   f: The rate of change, dy/dx, at an x and y.
+//
+// Returns:
+//   The solution at `steps + 1` equally spaced x's, from `x` to `to`.
+//
+// Example:
+//   // dy/dx = y with y(0) = 1, whose solution is e^x.
+//   let path = numeric.rk4(x: 0.0, y: 1.0, to: 1.0, steps: 10) { x, y in y }
+//   print(path[10].y)   // 2.718279744135166 (e is 2.718281828…)
+public fn rk4(x: Float, y: Float, to: Float, steps: Int = 100, _ f: fn(Float, Float) -> Float) -> [Sample] {
+    let n = max(steps, 1)
+    let h = (to - x) / Float(n)
+    var out = [Sample(x: x, y: y)]
+    var yi = y
+    var i = 0
+    while i < n {
+        let xi = x + h * Float(i)
+        let k1 = f(xi, yi)
+        let k2 = f(xi + h / 2.0, yi + h / 2.0 * k1)
+        let k3 = f(xi + h / 2.0, yi + h / 2.0 * k2)
+        let k4 = f(xi + h, yi + h * k3)
+        yi += h / 6.0 * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+        i += 1
+        let xn = if i == n { to } else { x + h * Float(i) }
+        out.append(Sample(x: xn, y: yi))
+    }
+    out
+}
+
+// `y` plus `h` times `k`, item by item.
+fn plus(_ y: [Float], _ h: Float, _ k: [Float]) -> [Float] {
+    var out: [Float] = []
+    var i = 0
+    while i < y.count {
+        out.append(y[i] + h * (if i < k.count { k[i] } else { 0.0 }))
+        i += 1
+    }
+    out
+}
+
+// The solution of a system dy/dx = f(x, y), where y is a list of
+// quantities that change together, from (x, y) to `to`, by fourth-order
+// Runge-Kutta with `steps` equal steps.
+//
+// A higher-order equation becomes a system: for y'' = g(x, y, y'), take
+// y[0] = y and y[1] = y', so that y[0]' = y[1] and y[1]' = g(x, y[0], y[1]).
+//
+// Parameters:
+//   x: Where the solution starts.
+//   y: The quantities there (the starting conditions).
+//   to: Where it ends. It may be less than `x`.
+//   steps: How many equal steps to take (at least 1).
+//   f: The rates of change of the quantities at an x and y, as many as
+//      there are quantities, in the same order.
+//
+// Returns:
+//   The solution at `steps + 1` equally spaced x's, from `x` to `to`.
+//
+// Example:
+//   // A swinging pendulum, small angles: angle'' = -angle, starting at
+//   // angle 1 and at rest. After half a period (pi) the angle is -1.
+//   let path = numeric.rk4System(x: 0.0, y: [1.0, 0.0], to: pi, steps: 100) { t, s in
+//       [s[1], -s[0]]
+//   }
+//   print(path[100].y[0])   // about -1.0
+public fn rk4System(x: Float, y: [Float], to: Float, steps: Int = 100, _ f: fn(Float, [Float]) -> [Float]) -> [State] {
+    let n = max(steps, 1)
+    let h = (to - x) / Float(n)
+    var out = [State(x: x, y: y)]
+    var yi = y
+    var i = 0
+    while i < n {
+        let xi = x + h * Float(i)
+        let k1 = f(xi, yi)
+        let k2 = f(xi + h / 2.0, plus(yi, h / 2.0, k1))
+        let k3 = f(xi + h / 2.0, plus(yi, h / 2.0, k2))
+        let k4 = f(xi + h, plus(yi, h, k3))
+        var next: [Float] = []
+        var j = 0
+        while j < yi.count {
+            let slope = (k1[j] + 2.0 * k2[j] + 2.0 * k3[j] + k4[j]) / 6.0
+            next.append(yi[j] + h * slope)
+            j += 1
+        }
+        yi = next
+        i += 1
+        let xn = if i == n { to } else { x + h * Float(i) }
+        out.append(State(x: xn, y: yi))
+    }
+    out
+}
+
+// The solution of dy/dx = f(x, y) from (x, y) to `to`, to within
+// `tolerance` at each step, by the Dormand-Prince method.
+//
+// Each step is worked out to fifth and fourth order; their difference
+// estimates the step's error, which sets the next step's size: longer where
+// the solution is smooth, shorter where it turns. A step whose error is too
+// large is tried again, shorter.
+//
+// Parameters:
+//   x: Where the solution starts.
+//   y: The quantity there (the starting condition).
+//   to: Where it ends. It may be less than `x`, to go backwards.
+//   tolerance: How large each step's error may be, relative to the size of
+//              y (and absolute where y is smaller than 1).
+//   maxSteps: The most steps to take before giving up.
+//   f: The rate of change, dy/dx, at an x and y.
+//
+// Returns:
+//   A `Solution`: the samples at each step, how many steps it took, and
+//   whether it got to `to`.
+//
+// Example:
+//   // A reservoir's level h (m) through a day, with 50 m³/s flowing in
+//   // and Q = 30 h^1.5 flowing out over a spillway, on 2 km² of surface.
+//   let day = numeric.solve(x: 0.0, y: 0.5, to: 86400.0) { t, h in
+//       (50.0 - 30.0 * pow(max(h, 0.0), 1.5)) / 2000000.0
+//   }
+//   print(day.samples[day.samples.count - 1].y)   // about 1.30, rising
+//   // towards 1.41 m, where the outflow matches the inflow
+public fn solve(x: Float, y: Float, to: Float, tolerance: Float = 1e-8, maxSteps: Int = 10000, _ f: fn(Float, Float) -> Float) -> Solution {
+    var out = [Sample(x: x, y: y)]
+    let length = to - x
+    if length == 0.0 {
+        return Solution(samples: out, steps: 0, converged: true)
+    }
+    let direction = if length > 0.0 { 1.0 } else { -1.0 }
+    var h = length / 100.0
+    var xi = x
+    var yi = y
+    var steps = 0
+    var tries = 0
+    var k1 = f(xi, yi)
+    while direction * (to - xi) > 0.0 {
+        if steps >= maxSteps || tries >= 10 * maxSteps {
+            return Solution(samples: out, steps: steps, converged: false)
+        }
+        tries += 1
+        // (Not past the end.)
+        if direction * (xi + h - to) > 0.0 {
+            h = to - xi
+        }
+        let k2 = f(xi + h / 5.0, yi + h * (k1 / 5.0))
+        let k3 = f(xi + h * 3.0 / 10.0, yi + h * (3.0 / 40.0 * k1 + 9.0 / 40.0 * k2))
+        let k4 = f(xi + h * 4.0 / 5.0, yi + h * (44.0 / 45.0 * k1 - 56.0 / 15.0 * k2 + 32.0 / 9.0 * k3))
+        let k5 = f(xi + h * 8.0 / 9.0, yi + h * (19372.0 / 6561.0 * k1 - 25360.0 / 2187.0 * k2 + 64448.0 / 6561.0 * k3 - 212.0 / 729.0 * k4))
+        let k6 = f(xi + h, yi + h * (9017.0 / 3168.0 * k1 - 355.0 / 33.0 * k2 + 46732.0 / 5247.0 * k3 + 49.0 / 176.0 * k4 - 5103.0 / 18656.0 * k5))
+        let y5 = yi + h * (35.0 / 384.0 * k1 + 500.0 / 1113.0 * k3 + 125.0 / 192.0 * k4 - 2187.0 / 6784.0 * k5 + 11.0 / 84.0 * k6)
+        let k7 = f(xi + h, y5)
+        // The fifth-order answer less the fourth-order one.
+        let err = abs(h * (71.0 / 57600.0 * k1 - 71.0 / 16695.0 * k3 + 71.0 / 1920.0 * k4 - 17253.0 / 339200.0 * k5 + 22.0 / 525.0 * k6 - 1.0 / 40.0 * k7))
+        let scale = tolerance * max(1.0, max(abs(yi), abs(y5)))
+        if !err.isFinite || !y5.isFinite {
+            h /= 4.0
+            if abs(h) < 1e-14 * max(1.0, abs(xi)) {
+                return Solution(samples: out, steps: steps, converged: false)
+            }
+            continue
+        }
+        if err <= scale {
+            xi += h
+            yi = y5
+            k1 = k7
+            steps += 1
+            out.append(Sample(x: xi, y: yi))
+        }
+        // The next size: aiming at the tolerance, by at most 5 times longer
+        // or 5 times shorter.
+        let factor = if err == 0.0 { 5.0 } else { min(5.0, max(0.2, 0.9 * pow(scale / err, 0.2))) }
+        h *= factor
+        if abs(h) < 1e-14 * max(1.0, abs(xi)) {
+            return Solution(samples: out, steps: steps, converged: false)
+        }
+    }
+    Solution(samples: out, steps: steps, converged: true)
+}
